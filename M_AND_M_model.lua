@@ -102,11 +102,11 @@ function train_model(model, criterion, data, labels, test_data, test_labels, opt
         for batch=1,opt.nBatches do
             opt.idx = (order[batch] - 1) * opt.minibatchSize + 1
             optim.sgd(feval, parameters, opt)
-            print("epoch: ", epoch, " batch: ", batch)
+            -- print("epoch: ", epoch, " batch: ", batch)
         end
-        print("Here")
+
         local accuracy = test_model(model, test_data, test_labels, opt)
-        print("epoch ", epoch, " error: ", accuracy)
+        -- print("epoch ", epoch, " error: ", accuracy)
 
     end
 end
