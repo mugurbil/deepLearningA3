@@ -1,11 +1,118 @@
 require 'torch'
 require 'nn'
 require 'optim'
+require 'xlua'
 
 ffi = require('ffi')
 
---- Parses and loads the GloVe word vectors into a hash table:
--- glove_table['word'] = vector
+glove_cache = {}
+
+function preprocess_data(raw_data, opt)
+    local data = torch.zeros(opt.nClasses*(opt.nTrainDocs+opt.nTestDocs), opt.words_per_review, opt.inputDim)
+    local labels = torch.zeros(opt.nClasses*(opt.nTrainDocs + opt.nTestDocs))
+    
+    -- use torch.randperm to shuffle the data, since it's ordered by class in the file
+    local order = torch.randperm(opt.nClasses*(opt.nTrainDocs+opt.nTestDocs))
+    
+    vector = torch.Tensor(opt.inputDim)
+
+    for i=1,opt.nClasses do
+        for j=1,opt.nTrainDocs+opt.nTestDocs do
+	    --xlua.progress((i-1)*(opt.nTrainDocs+opt.nTestDocs) + j, opt.nClasses*(opt.nTrainDocs+opt.nTestDocs))
+            local k = order[(i-1)*(opt.nTrainDocs+opt.nTestDocs) + j]
+            
+            local doc_size = 1
+            
+            local index = raw_data.index[i][j]
+            -- standardize to all lowercase
+            local document = ffi.string(torch.data(raw_data.content:narrow(1, index, 1))):lower()
+            
+            vectorized_document = torch.Tensor(opt.words_per_review, opt.inputDim):fill(0)
+	    word_number = 1
+	    for word in document:gmatch("%S+") do
+  	        word = word:gsub("%p+", ""):lower() -- remove all punctuation and change to lower case
+	    	if word_number <= opt.words_per_review then
+		    if glove_cache[word] == nil then
+		       goto continue
+		    end
+		    vectorized_document[word_number] = glove_cache[word]
+		else
+		    break
+		end
+		word_number = word_number + 1
+		::continue::
+            end
+	    words_used = word_number - 1
+	    if words_used < opt.words_per_review and words_used ~= 0 then
+	       for t = 1, opt.words_per_review - words_used do
+	       	   --print(t+words_used, ((t-1) % words_used), t)
+		   fake_word_index = t + words_used
+		   substitute_word_index = ((t-1) % words_used) + 1
+		   if pcall(function () vectorized_document[fake_word_index] = vectorized_document[substitute_word_index] end) then
+		   --ok
+		   else
+			print(fake_word_index, substitute_word_index, t, words_used)
+		   end
+   	       	   
+	       end
+	    end
+	    
+            data[k] = vectorized_document
+            labels[k] = i
+        end
+    end
+
+    return data, labels
+end
+
+function train_model(model, criterion, data, labels, test_data, test_labels, opt)
+
+    parameters, grad_parameters = model:getParameters()
+    
+    -- optimization functional to train the model with torch's optim library
+    local function feval(x) 
+        local minibatch = data:sub(opt.idx, opt.idx + opt.minibatchSize, 1, data:size(2)):clone()
+        local minibatch_labels = labels:sub(opt.idx, opt.idx + opt.minibatchSize):clone()
+        
+        model:training()
+        local minibatch_loss = criterion:forward(model:forward(minibatch), minibatch_labels)
+        model:zeroGradParameters()
+        model:backward(minibatch, criterion:backward(model.output, minibatch_labels))
+        
+        return minibatch_loss, grad_parameters
+    end
+    
+    for epoch=1,opt.nEpochs do
+        local order = torch.randperm(opt.nBatches) -- not really good randomization
+        for batch=1,opt.nBatches do
+            opt.idx = (order[batch] - 1) * opt.minibatchSize + 1
+            optim.sgd(feval, parameters, opt)
+            print("epoch: ", epoch, " batch: ", batch)
+        end
+
+        local accuracy = test_model(model, test_data, test_labels, opt)
+        print("epoch ", epoch, " error: ", accuracy)
+	print("Saving")
+	torch.save("model.net", model, 'ascii')
+	print("Saved")
+
+    end
+end
+
+function test_model(model, data, labels, opt)
+    
+    model:evaluate()
+
+    local pred = model:forward(data)
+    local _, argmax = pred:max(2)
+    local err = torch.ne(argmax:double(), labels:double()):sum() / labels:size(1)
+
+    --local debugger = require('fb.debugger')
+    --debugger.enter()
+
+    return err
+end
+
 function load_glove(path, inputDim)
     
     local glove_file = io.open(path)
@@ -37,113 +144,16 @@ function load_glove(path, inputDim)
     return glove_table
 end
 
---- Here we simply encode each document as a fixed-length vector 
--- by computing the unweighted average of its word vectors.
--- A slightly better approach would be to weight each word by its tf-idf value
--- before computing the bag-of-words average; this limits the effects of words like "the".
--- Still better would be to concatenate the word vectors into a variable-length
--- 2D tensor and train a more powerful convolutional or recurrent model on this directly.
-
--- We stack the word vectors on top of each other to create one giant vector
-function preprocess_data(raw_data, wordvector_table, opt)
-    
-    local length = 100
-    local data = torch.zeros(opt.nClasses*(opt.nTrainDocs+opt.nTestDocs), length, opt.inputDim)
-    local labels = torch.zeros(opt.nClasses*(opt.nTrainDocs + opt.nTestDocs))
-    
-    -- use torch.randperm to shuffle the data, since it's ordered by class in the file
-    local order = torch.randperm(opt.nClasses*(opt.nTrainDocs+opt.nTestDocs))
-    
-    for i=1,opt.nClasses do
-        for j=1,opt.nTrainDocs+opt.nTestDocs do
-            local k = order[(i-1)*(opt.nTrainDocs+opt.nTestDocs) + j]
-            
-            local doc_size = 1
-            
-            local index = raw_data.index[i][j]
-            -- standardize to all lowercase
-            local document = ffi.string(torch.data(raw_data.content:narrow(1, index, 1))):lower()
-            
-            -- break each review into words and compute the document average
-            local l = 1
-            for word in document:gmatch("%S+") do
-                if wordvector_table[word:gsub("%p+", "")] and l<100 then
-                    doc_size = doc_size + 1
-                    data[k][l] = wordvector_table[word:gsub("%p+", "")]
-                    l = l + 1
-                end
-            end
-            labels[k] = i
-        end
-    end
-
-    return data, labels
-end
-
-function train_model(model, criterion, data, labels, test_data, test_labels, opt)
-
-    parameters, grad_parameters = model:getParameters()
-    
-    -- optimization functional to train the model with torch's optim library
-    local function feval(x) 
-        local minibatch = data:sub(opt.idx, opt.idx + opt.minibatchSize - 1, 1, data:size(2)):clone()
-        local minibatch_labels = labels:sub(opt.idx, opt.idx + opt.minibatchSize -1):clone()
-        
-        model:training()
-        local minibatch_loss = criterion:forward(model:forward(minibatch), minibatch_labels)
-        model:zeroGradParameters()
-        model:backward(minibatch, criterion:backward(model.output, minibatch_labels))
-        
-        return minibatch_loss, grad_parameters
-    end
-    
-    for epoch=1,opt.nEpochs do
-        local order = torch.randperm(opt.nBatches) -- not really good randomization
-        for batch=1,opt.nBatches do
-            opt.idx = (order[batch] - 1) * opt.minibatchSize + 1
-            optim.sgd(feval, parameters, opt)
-            -- print("epoch: ", epoch, " batch: ", batch)
-        end
-
-        local accuracy = test_model(model, test_data, test_labels, opt)
-        print("epoch ", epoch, " error: ", accuracy)
-        torch.save('model.net', model, 'ascii')
-        print("Saved Model")
-
-    end
-end
-
-function test_model(model, data, labels, opt)
-    
-    model:evaluate()
-
-    local pred = model:forward(data)
-    local p = pred:add(.5):floor()
-    -- print(p)
-    -- local _, argmax = pred:max(2)
-
-    local err = torch.ne(p:double(), labels:double()):sum() / labels:size(1)
-
-    --local debugger = require('fb.debugger')
-    --debugger.enter()
-
-    return err
-end
-
-function file_exists(name)
-   local f=io.open(name,"r")
-   if f~=nil then io.close(f) return true else return false end
-end
-
 function main()
 
     -- Configuration parameters
     opt = {}
+    opt.words_per_review = 100
     -- change these to the appropriate data locations
-    opt.glovePath = "/scratch/mu388/glove.twitter.27B.25d.txt" -- path to raw glove data .txt file
+    opt.glovePath = "/scratch/ml4133/glove.6B.50d.txt" -- path to raw glove data .txt file
     opt.dataPath = "/scratch/courses/DSGA1008/A3/data/train.t7b"
     -- word vector dimensionality
-    opt.inputDim = 25
+    opt.inputDim = 50 --From now on don't change this because the database is built with 50 dimensional vectors
     -- nTrainDocs is the number of documents per class used in the training set, i.e.
     -- here we take the first nTrainDocs documents from each class as training samples
     -- and use the rest as a validation set.
@@ -154,60 +164,43 @@ function main()
     opt.nEpochs = 100
     opt.minibatchSize = 128
     opt.nBatches = math.floor(opt.nTrainDocs / opt.minibatchSize)
-    opt.learningRate = 0.001
-    opt.learningRateDecay = 0.00001
-    opt.momentum = 0.3
+    opt.learningRate = 0.03
+    opt.learningRateDecay = 0.01
+    opt.momentum = 0.01
     opt.idx = 1
 
-    print("Loading word vectors...")
-    local glove_table = load_glove(opt.glovePath, opt.inputDim)
-    
     print("Loading raw data...")
     local raw_data = torch.load(opt.dataPath)
-    
-    print("Computing document input representations...")
-    local processed_data, labels = preprocess_data(raw_data, glove_table, opt)
-    
-    -- split data into makeshift training and validation sets
-    local training_data = processed_data:sub(1, opt.nClasses*opt.nTrainDocs, 1, processed_data:size(2)):clone()
-    local training_labels = labels:sub(1, opt.nClasses*opt.nTrainDocs):clone()
 
+    print("Loading glove...")
+    glove_cache = load_glove(opt.glovePath, opt.inputDim)
+
+    print("Computing document input representations...")
+    local processed_data, labels = preprocess_data(raw_data, opt)
+    print(processed_data:size())
+    -- split data into makeshift training and validation sets
+    local training_data = processed_data[{{1, opt.nTrainDocs * opt.nClasses}, {}, {}}]:clone()
+    local training_labels = labels[{{1, opt.nTrainDocs * opt.nClasses}}]:clone()
+    
     -- make your own choices - here I have not created a separate test set
-    local test_data = processed_data:sub(opt.nClasses*opt.nTrainDocs+1, opt.nClasses*10000, 1, processed_data:size(2)):clone()
-    local test_labels = labels:sub(1+opt.nClasses*opt.nTrainDocs,opt.nClasses*10000):clone()
+    local test_data = processed_data[{{opt.nTrainDocs * opt.nClasses + 1, (opt.nTrainDocs + opt.nTestDocs)*opt.nClasses}, {}, {}}]:clone()
+    local test_labels = labels[{{opt.nTrainDocs * opt.nClasses + 1, (opt.nTrainDocs + opt.nTestDocs)*opt.nClasses}}]:clone()
 
     -- construct model:
     model = nn.Sequential()
-   
     kW = 5
-    -- if you decide to just adapt the baseline code for part 2, you'll probably want to make this linear and remove pooling
-    model:add(nn.TemporalConvolution(opt.inputDim, 2*opt.inputDim, kW))
-    model:add(nn.TemporalMaxPooling(kW))
+    output_dim = 10
+    model:add(nn.TemporalConvolution(opt.inputDim, output_dim, kW))    
+    output_frames = (opt.words_per_review - kW) + 1
     model:add(nn.HardTanh())
-    model:add(nn.TemporalConvolution(2*opt.inputDim, 4*opt.inputDim, kW-1))
-    model:add(nn.TemporalMaxPooling(kW-1))  
-    model:add(nn.HardTanh())
-    model:add(nn.TemporalConvolution(4*opt.inputDim, 8*opt.inputDim, 2)) 
-    model:add(nn.TemporalMaxPooling(3))
-    model:add(nn.HardTanh())
-    model:add(nn.Reshape(8*opt.inputDim,true))
-    model:add(nn.Linear(8*opt.inputDim, 16))
-    model:add(nn.Dropout(0.2)) 
-    model:add(nn.HardTanh())
-    model:add(nn.Linear(16, 1)) 
-    model:add(nn.Dropout(0.2))
-    criterion = nn.MSECriterion()
-
-    print("Training...")
-    if(file_exists('model.net')) then
-        print("Loading previously saved model")
-        model = torch.load('model.net', 'ascii')
-    end
+    model:add(nn.Reshape(output_frames*output_dim, true))
+    model:add(nn.Linear(output_frames*output_dim, 5))
+    model:add(nn.LogSoftMax())
+    criterion = nn.ClassNLLCriterion()
+   
     train_model(model, criterion, training_data, training_labels, test_data, test_labels, opt)
     local results = test_model(model, test_data, test_labels)
     print(results)
-    print("Saving Model")
-    torch.save('model.net', model, 'ascii')
 end
 
 main()

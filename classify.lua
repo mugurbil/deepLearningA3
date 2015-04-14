@@ -1,66 +1,50 @@
 require 'torch'
 require 'nn'
-require 'optim'
+require 'lookup'
 
-ffi = require('ffi')
 
-function load_glove(path, inputDim)
-    
-    local glove_file = io.open(path)
-    local glove_table = {}
-
-    local line = glove_file:read("*l")
-    while line do
-        -- read the GloVe text file one line at a time, break at EOF
-        local i = 1
-        local word = ""
-        for entry in line:gmatch("%S+") do -- split the line at each space
-            if i == 1 then
-                -- word comes first in each line, so grab it and create new table entry
-                word = entry:gsub("%p+", ""):lower() -- remove all punctuation and change to lower case
-                if string.len(word) > 0 then
-                    glove_table[word] = torch.zeros(inputDim, 1) -- padded with an extra dimension for convolution
-                else
-                    break
-                end
-            else
-                -- read off and store each word vector element
-                glove_table[word][i-1] = tonumber(entry)
-            end
-            i = i+1
-        end
-        line = glove_file:read("*l")
-    end
-    
-    return glove_table
-end
+model = torch.load('/scratch/ml4133/a3_model.net', 'ascii')
 
 cmd = torch.CmdLine()
-cmd:option('-input', " ")
+
+cmd:option('-input', ' ')
+
 params = cmd:parse(arg)
+review = params.input
 
-glovePath = "/scratch/mu388/glove.twitter.27B.25d.txt" -- path to raw glove data .txt file
-model = torch.load('model.net', 'ascii')
-glove_table = load_glove(glovePath, 25)
-data = torch.zeros(100, 25)
-document = params.input
--- break each review into words and compute the document average
-local l = 1
-for word in document:gmatch("%S+") do
-    if glove_table[word:gsub("%p+", "")] and l<100 then
-        data[l] = glove_table[word:gsub("%p+", "")]
-        l = l + 1
-    end
-end
-data = data:resize(1,100,25)
-pred = model:forward(data)
--- print(pred)
-p = pred:add(.5):floor()
-if p[1][1]<1 then
-    p[1][1] = 1
-end
-if p[1][1]>5 then
-    p[1][1] = 5
-end
+opt = {}
+opt.words_per_review = 100
+opt.inputDim = 50
 
-print(p[1][1])
+            vectorized_document = torch.Tensor(opt.words_per_review, opt.inputDim):fill(0)
+	    vector = torch.Tensor(opt.inputDim):fill(0)
+	    word_number = 1
+	    for word in review:gmatch("%S+") do
+  	        word = word:gsub("%p+", ""):lower() -- remove all punctuation and change to lower case
+	    	if word_number <= opt.words_per_review then
+		    vectorized_document[word_number] = lookup(word, vector)
+		else
+		    break
+		end
+		word_number = word_number + 1
+		::continue::
+            end
+	    words_used = word_number - 1
+	    if words_used < opt.words_per_review and words_used ~= 0 then
+	       for t = 1, opt.words_per_review - words_used do
+	       	   --print(t+words_used, ((t-1) % words_used), t)
+		   fake_word_index = t + words_used
+		   substitute_word_index = ((t-1) % words_used) + 1
+		   if pcall(function () vectorized_document[fake_word_index] = vectorized_document[substitute_word_index] end) then
+		   --ok
+		   else
+			print(fake_word_index, substitute_word_index, t, words_used)
+		   end
+   	       	   
+	       end
+	    end
+
+vectorized_document = vectorized_document:resize(1, 100, 50)
+pred = model:forward(vectorized_document)
+_, argmax = pred:max(2)
+print(argmax[1][1])
