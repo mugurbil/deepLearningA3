@@ -106,9 +106,9 @@ function train_model(model, criterion, data, labels, test_data, test_labels, opt
         end
 
         local accuracy = test_model(model, test_data, test_labels, opt)
-        -- print("epoch ", epoch, " error: ", accuracy)
-        -- torch.save('model.net', model, 'ascii')
-        -- print("Saved Model")
+        print("epoch ", epoch, " error: ", accuracy)
+        torch.save('model.net', model, 'ascii')
+        print("Saved Model")
 
     end
 end
@@ -149,9 +149,9 @@ function main()
     -- and use the rest as a validation set.
     opt.nTrainDocs = 9600
     opt.nTestDocs = 400
-    opt.nClasses = 100
+    opt.nClasses = 5
     -- SGD parameters - play around with these
-    opt.nEpochs = 5
+    opt.nEpochs = 100
     opt.minibatchSize = 128
     opt.nBatches = math.floor(opt.nTrainDocs / opt.minibatchSize)
     opt.learningRate = 0.001
