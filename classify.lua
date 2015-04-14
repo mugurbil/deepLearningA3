@@ -40,8 +40,8 @@ cmd:option('-input', " ")
 params = cmd:parse(arg)
 
 glovePath = "/scratch/mu388/glove.twitter.27B.25d.txt" -- path to raw glove data .txt file
-glove_table = load_glove(glovePath, 25)
 model = torch.load('model.net', 'ascii')
+glove_table = load_glove(glovePath, 25)
 data = torch.zeros(100, 25)
 document = params.input
 -- break each review into words and compute the document average
@@ -52,8 +52,15 @@ for word in document:gmatch("%S+") do
         l = l + 1
     end
 end
-
+data = data:resize(1,100,25)
 pred = model:forward(data)
-_, argmax = pred:max(2)
+-- print(pred)
+p = pred:add(.5):floor()
+if p[1][1]<1 then
+    p[1][1] = 1
+end
+if p[1][1]>5 then
+    p[1][1] = 5
+end
 
-print(argmax[1][1])
+print(p[1][1])

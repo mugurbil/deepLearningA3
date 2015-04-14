@@ -107,6 +107,8 @@ function train_model(model, criterion, data, labels, test_data, test_labels, opt
 
         local accuracy = test_model(model, test_data, test_labels, opt)
         -- print("epoch ", epoch, " error: ", accuracy)
+        -- torch.save('model.net', model, 'ascii')
+        -- print("Saved Model")
 
     end
 end
@@ -116,13 +118,21 @@ function test_model(model, data, labels, opt)
     model:evaluate()
 
     local pred = model:forward(data)
-    local _, argmax = pred:max(2)
-    local err = torch.ne(argmax:double(), labels:double()):sum() / labels:size(1)
+    local p = pred:add(.5):floor()
+    -- print(p)
+    -- local _, argmax = pred:max(2)
+
+    local err = torch.ne(p:double(), labels:double()):sum() / labels:size(1)
 
     --local debugger = require('fb.debugger')
     --debugger.enter()
 
     return err
+end
+
+function file_exists(name)
+   local f=io.open(name,"r")
+   if f~=nil then io.close(f) return true else return false end
 end
 
 function main()
@@ -139,14 +149,14 @@ function main()
     -- and use the rest as a validation set.
     opt.nTrainDocs = 9600
     opt.nTestDocs = 400
-    opt.nClasses = 5
+    opt.nClasses = 100
     -- SGD parameters - play around with these
     opt.nEpochs = 5
     opt.minibatchSize = 128
     opt.nBatches = math.floor(opt.nTrainDocs / opt.minibatchSize)
-    opt.learningRate = 0.1
-    opt.learningRateDecay = 0.001
-    opt.momentum = 0.1
+    opt.learningRate = 0.001
+    opt.learningRateDecay = 0.00001
+    opt.momentum = 0.3
     opt.idx = 1
 
     print("Loading word vectors...")
@@ -173,24 +183,28 @@ function main()
     -- if you decide to just adapt the baseline code for part 2, you'll probably want to make this linear and remove pooling
     model:add(nn.TemporalConvolution(opt.inputDim, 2*opt.inputDim, kW))
     model:add(nn.TemporalMaxPooling(kW))
-    model:add(nn.ReLU())
+    model:add(nn.HardTanh())
     model:add(nn.TemporalConvolution(2*opt.inputDim, 4*opt.inputDim, kW-1))
     model:add(nn.TemporalMaxPooling(kW-1))  
-    model:add(nn.ReLU())
+    model:add(nn.HardTanh())
     model:add(nn.TemporalConvolution(4*opt.inputDim, 8*opt.inputDim, 2)) 
     model:add(nn.TemporalMaxPooling(3))
-    model:add(nn.ReLU())
+    model:add(nn.HardTanh())
     model:add(nn.Reshape(8*opt.inputDim,true))
     model:add(nn.Linear(8*opt.inputDim, 16))
     model:add(nn.Dropout(0.2)) 
-    model:add(nn.ReLU())
+    model:add(nn.HardTanh())
     model:add(nn.Linear(16, 1)) 
     model:add(nn.Dropout(0.2))
     model:add(nn.LogSoftMax())
 
-    criterion = nn.AbsCriterion()
+    criterion = nn.MSECriterion()
 
     print("Training...")
+    if(file_exists('model.net')) then
+        print("Loading previously saved model")
+        model = torch.load('model.net', 'ascii')
+    end
     train_model(model, criterion, training_data, training_labels, test_data, test_labels, opt)
     local results = test_model(model, test_data, test_labels)
     print(results)
