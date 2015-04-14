@@ -196,8 +196,6 @@ function main()
     model:add(nn.HardTanh())
     model:add(nn.Linear(16, 1)) 
     model:add(nn.Dropout(0.2))
-    model:add(nn.LogSoftMax())
-
     criterion = nn.MSECriterion()
 
     print("Training...")
